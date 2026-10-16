@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Editors / operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets and local configuration
+.env
+.streamlit/secrets.toml
+
+# Model weights and datasets can be large or have sharing restrictions.
+# Keep the trained model local unless you intentionally choose a suitable hosting method.
+retinal_disease_model.h5
+*.keras
+*.h5
+data/
+datasets/
