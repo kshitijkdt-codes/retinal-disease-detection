@@ -85,9 +85,35 @@ streamlit run app.py
 
 Streamlit should open the app in your browser. If it does not, open the local URL printed in the terminal (usually `http://localhost:8501`).
 
+## Train the model
+
+Arrange your dataset as one folder per class. The folder names must match the labels exactly:
+
+```text
+data/
+├── train/
+│   ├── Normal/
+│   ├── Diabetic Retinopathy/
+│   ├── Glaucoma/
+│   ├── Cataract/
+│   ├── AMD/
+│   ├── Hypertension/
+│   ├── Myopia/
+│   └── Other/
+└── test/        # optional, same structure
+```
+
+Then run:
+
+```bash
+python train.py --data-dir data
+```
+
+This saves `retinal_disease_model.h5`, `class_names.json` and `evaluation.json` (accuracy, per-class precision/recall/F1, confusion matrix). Copy the `.h5` file next to `app.py` and run the app.
+
 ## Model and evaluation notes
 
-- The application code does not train a model; it loads an already trained model.
+- `app.py` does not train a model; it loads an already trained model. To train one, use `train.py` (see "Train the model" below).
 - The class names above are taken from the project report. The actual training class mapping was not included in the report's application code, so it must be verified.
 - The score is shown as a percentage for readability. It should not be interpreted as a clinically calibrated probability.
 - A roughly square aspect ratio cannot reliably prove that an image is a retinal fundus image. This app validates that the upload is a readable image, but it cannot guarantee the image is a fundus photograph.
@@ -98,8 +124,10 @@ Streamlit should open the app in your browser. If it does not, open the local UR
 ```text
 retinal-disease-detection/
 ├── app.py
+├── train.py
 ├── requirements.txt
 ├── README.md
+├── LICENSE
 ├── .gitignore
 └── retinal_disease_model.h5   # local only; ignored by Git
 ```
@@ -107,7 +135,6 @@ retinal-disease-detection/
 ## Future improvements
 
 - Verify the exact model output activation and training class order.
-- Add a separate training/evaluation notebook with dataset provenance and reproducible splits.
 - Report evaluation metrics on a held-out test set (for example, per-class precision, recall, F1-score, and confusion matrix).
 - Add tests for image preprocessing and model output validation.
 - Consider model hosting or Git LFS only after checking file size, licensing, privacy, and platform limits.
