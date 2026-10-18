@@ -1,26 +1,30 @@
 """Convert the Kaggle ODIR-5K dataset into the folder layout train.py expects.
 
-ODIR-5K ships one CSV row per patient, with 0/1 label columns N, D, G, C, A, H, M, O and
-two image file names (Left-Fundus, Right-Fundus). This script:
+Supports the Kaggle file `full_df.csv` (one row per EYE image, columns `filename` and
+`labels`, e.g. "['N']") and falls back to the original patient-level format
+(columns Left-Fundus, Right-Fundus and 0/1 columns N, D, G, C, A, H, M, O).
 
-  * keeps only patients that have EXACTLY ONE label (train.py is single-label / softmax),
-  * copies both eye images into  <out>/<split>/<Class name>/,
-  * splits train/test BY PATIENT so the two eyes of one person never end up in both sets.
+What it does:
+  * keeps only images that have exactly one label (train.py is single-label / softmax),
+  * copies them into  <out>/<split>/<Class name>/,
+  * splits train/test BY PATIENT (ID column) so both eyes of one person never end up in
+    different splits.
 
-Usage (adjust the paths to where you extracted the Kaggle download):
-    python prepare_dataset.py --csv path/to/full_df.csv --images-dir path/to/images --out data
+Usage:
+    python prepare_dataset.py --csv path/to/full_df.csv --images-dir path/to/preprocessed_images --out data
 
 Dataset: https://www.kaggle.com/datasets/andrewmvd/ocular-disease-recognition-odir5k
 """
 
 import argparse
+import ast
 import random
 import shutil
 from pathlib import Path
 
 import pandas as pd
 
-# ODIR column -> folder name. Folder names must match DISEASE_LABELS in train.py / app.py.
+# ODIR code -> folder name. Folder names must match DISEASE_LABELS in train.py / app.py.
 # Note: ODIR's "D" means diabetes-related retinal disease; it is used here as
 # "Diabetic Retinopathy" to match the labels in app.py.
 CODE_TO_CLASS = {
@@ -33,59 +37,78 @@ CODE_TO_CLASS = {
     "M": "Myopia",
     "O": "Other",
 }
+CODES = list(CODE_TO_CLASS)
 
 
-def find_image(images_dir: Path, name: str):
-    p = images_dir / name
-    if p.is_file():
-        return p
-    matches = list(images_dir.rglob(name))  # tolerate sub-folders
-    return matches[0] if matches else None
+def parse_labels(value):
+    """'['N']' -> ['N'] (also accepts a plain list)."""
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    try:
+        parsed = ast.literal_eval(str(value))
+        return list(parsed) if isinstance(parsed, (list, tuple)) else [str(parsed)]
+    except (ValueError, SyntaxError):
+        return []
+
+
+def build_records(df):
+    """Return a list of (patient_id, image_filename, class_name) with exactly one label."""
+    records = []
+    if {"filename", "labels"}.issubset(df.columns):
+        print("Format: one row per eye image (filename + labels).")
+        for i, row in df.iterrows():
+            labs = [c for c in parse_labels(row["labels"]) if c in CODE_TO_CLASS]
+            if len(labs) == 1:
+                records.append((row["ID"] if "ID" in df.columns else i, str(row["filename"]), CODE_TO_CLASS[labs[0]]))
+    elif {"Left-Fundus", "Right-Fundus", *CODES}.issubset(df.columns):
+        print("Format: one row per patient (Left-Fundus / Right-Fundus + N..O flags).")
+        for i, row in df.iterrows():
+            flags = [c for c in CODES if row[c] == 1]
+            if len(flags) == 1:
+                pid = row["ID"] if "ID" in df.columns else i
+                records.append((pid, str(row["Left-Fundus"]), CODE_TO_CLASS[flags[0]]))
+                records.append((pid, str(row["Right-Fundus"]), CODE_TO_CLASS[flags[0]]))
+    else:
+        raise SystemExit(f"Unrecognised CSV format. Columns found: {list(df.columns)}")
+    return records
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--csv", type=Path, required=True, help="ODIR CSV (e.g. full_df.csv / data.csv).")
-    ap.add_argument("--images-dir", type=Path, required=True, help="Folder containing the fundus images.")
+    ap.add_argument("--csv", type=Path, required=True)
+    ap.add_argument("--images-dir", type=Path, required=True)
     ap.add_argument("--out", type=Path, default=Path("data"))
     ap.add_argument("--test-fraction", type=float, default=0.15)
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
     df = pd.read_csv(args.csv)
-    missing_cols = [c for c in [*CODE_TO_CLASS, "Left-Fundus", "Right-Fundus"] if c not in df.columns]
-    if missing_cols:
-        raise SystemExit(f"CSV is missing expected columns {missing_cols}. Found: {list(df.columns)}")
+    records = build_records(df)
+    print(f"Images with exactly one label: {len(records)}")
 
-    codes = list(CODE_TO_CLASS)
-    df = df[df[codes].sum(axis=1) == 1].copy()
-    print(f"Patients with exactly one label: {len(df)}")
-
-    rng = random.Random(args.seed)
-    patient_idx = list(df.index)
-    rng.shuffle(patient_idx)
-    n_test = int(len(patient_idx) * args.test_fraction)
-    test_set = set(patient_idx[:n_test])
+    patients = sorted({r[0] for r in records}, key=str)
+    random.Random(args.seed).shuffle(patients)
+    test_patients = set(patients[: int(len(patients) * args.test_fraction)])
 
     counts, not_found = {}, 0
-    for idx, row in df.iterrows():
-        cls = CODE_TO_CLASS[next(c for c in codes if row[c] == 1)]
-        split = "test" if idx in test_set else "train"
-        for col in ("Left-Fundus", "Right-Fundus"):
-            src = find_image(args.images_dir, str(row[col]))
-            if src is None:
-                not_found += 1
-                continue
-            dst_dir = args.out / split / cls
-            dst_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst_dir / src.name)
-            counts[(split, cls)] = counts.get((split, cls), 0) + 1
+    for pid, fname, cls in records:
+        src = args.images_dir / fname
+        if not src.is_file():
+            not_found += 1
+            continue
+        split = "test" if pid in test_patients else "train"
+        dst_dir = args.out / split / cls
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst_dir / src.name)
+        counts[(split, cls)] = counts.get((split, cls), 0) + 1
 
     print(f"\nImages not found: {not_found}")
     for split in ("train", "test"):
         print(f"\n{split}:")
         for cls in CODE_TO_CLASS.values():
             print(f"  {cls:22s} {counts.get((split, cls), 0)}")
+    if not_found == len(records):
+        raise SystemExit("No images were found - check --images-dir.")
     print(f"\nDone. Now run:  python train.py --data-dir {args.out}")
 
 
